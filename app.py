@@ -14,7 +14,7 @@ def check_password():
     st.title("🎲 Board Game Retreat")
     pwd = st.text_input("Password", type="password")
     if st.button("Enter"):
-        if pwd == st.secrets["app"]["password"]:
+        if pwd == st.secrets["password"]:
             st.session_state["authenticated"] = True
             st.rerun()
         else:
