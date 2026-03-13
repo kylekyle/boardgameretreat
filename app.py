@@ -8,6 +8,9 @@ import pandas as pd
 # ── Page config ──────────────────────────────────────────────────────────────
 st.set_page_config(page_title="Board Game Retreat", page_icon="🎲", layout="centered")
 
+INTEREST_OPTIONS = ["must play", "want to play", "willing to play"]
+INTEREST_ICONS = {"must play": "🔥", "want to play": "👍", "willing to play": "🤷"}
+
 # ── Google Sheets setup ───────────────────────────────────────────────────────
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
@@ -29,20 +32,40 @@ def load_games():
         columns=["id", "title", "host", "max_players", "players", "status", "notes"]
     )
 
-def save_game(title, host, max_players, notes):
+def parse_players(players_str):
+    """Return list of (name, interest) tuples from 'name:interest, ...' string."""
+    result = []
+    for entry in str(players_str).split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        if ":" in entry:
+            name, interest = entry.split(":", 1)
+            result.append((name.strip(), interest.strip()))
+        else:
+            result.append((entry, "willing to play"))
+    return result
+
+def encode_players(player_tuples):
+    """Encode list of (name, interest) tuples back to storage string."""
+    return ", ".join(f"{name}:{interest}" for name, interest in player_tuples)
+
+def save_game(title, host, max_players, notes, host_interest):
     sheet = get_sheet().worksheet("games")
     game_id = str(int(time.time()))
-    sheet.append_row([game_id, title, host, max_players, host, "open", notes])
+    players_str = f"{host}:{host_interest}"
+    sheet.append_row([game_id, title, host, max_players, players_str, "open", notes])
 
-def join_game(game_id, player_name):
+def join_game(game_id, player_name, interest):
     sheet = get_sheet().worksheet("games")
     records = sheet.get_all_records()
-    for i, row in enumerate(records, start=2):  # row 1 is header
+    for i, row in enumerate(records, start=2):
         if str(row["id"]) == str(game_id):
-            current = row["players"]
-            if player_name not in current.split(", "):
-                updated = f"{current}, {player_name}" if current else player_name
-                sheet.update_cell(i, 6, updated)  # col 6 = players
+            players = parse_players(row["players"])
+            names = [n for n, _ in players]
+            if player_name not in names:
+                players.append((player_name, interest))
+                sheet.update_cell(i, 6, encode_players(players))
             break
 
 def leave_game(game_id, player_name):
@@ -50,8 +73,8 @@ def leave_game(game_id, player_name):
     records = sheet.get_all_records()
     for i, row in enumerate(records, start=2):
         if str(row["id"]) == str(game_id):
-            players = [p.strip() for p in row["players"].split(",") if p.strip() != player_name]
-            sheet.update_cell(i, 6, ", ".join(players))
+            players = [(n, lvl) for n, lvl in parse_players(row["players"]) if n != player_name]
+            sheet.update_cell(i, 6, encode_players(players))
             break
 
 def close_game(game_id):
@@ -64,11 +87,9 @@ def close_game(game_id):
 
 # ── Session persistence via localStorage ─────────────────────────────────────
 def load_user_from_storage():
-    """Read the saved username from browser localStorage."""
     return st_javascript("localStorage.getItem('retreat_user') || ''")
 
 def save_user_to_storage(name: str):
-    """Persist the username to browser localStorage."""
     safe = name.replace("'", "\\'")
     st_javascript(f"localStorage.setItem('retreat_user', '{safe}')")
 
@@ -81,10 +102,8 @@ def identity_sidebar():
         st.title("🎲 Board Game Retreat")
         st.divider()
 
-        # Only read localStorage once per session to avoid flicker
         if "user_loaded" not in st.session_state:
             stored = load_user_from_storage()
-            # st_javascript returns 0 on first render; wait for real value
             if isinstance(stored, str) and stored:
                 st.session_state["player_name"] = stored
             st.session_state["user_loaded"] = True
@@ -136,21 +155,28 @@ def game_list():
         st.info("No games open yet. Be the first to host one!")
     else:
         for _, game in open_games.iterrows():
-            players_list = [p.strip() for p in str(game["players"]).split(",") if p.strip()]
-            spots_left = int(game["max_players"]) - len(players_list)
-            is_joined = player in players_list
+            players = parse_players(game["players"])
+            names = [n for n, _ in players]
+            spots_left = int(game["max_players"]) - len(players)
+            is_joined = player in names
             is_host = player == game["host"]
+            joining_key = f"joining_{game['id']}"
 
             with st.container(border=True):
                 c1, c2 = st.columns([4, 1])
                 with c1:
                     st.markdown(f"**{game['title']}**  •  hosted by *{game['host']}*")
-                    st.caption(
-                        f"Players ({len(players_list)}/{game['max_players']}): "
-                        + (", ".join(players_list) if players_list else "—")
-                    )
+                    if players:
+                        player_tags = ", ".join(
+                            f"{n} {INTEREST_ICONS.get(lvl, '')} *{lvl}*"
+                            for n, lvl in players
+                        )
+                        st.caption(f"Players ({len(players)}/{game['max_players']}): {player_tags}")
+                    else:
+                        st.caption(f"Players (0/{game['max_players']}): —")
                     if game["notes"]:
                         st.caption(f"📝 {game['notes']}")
+
                 with c2:
                     if not player:
                         st.caption("Set your name to join")
@@ -161,13 +187,33 @@ def game_list():
                     elif is_joined:
                         if st.button("Leave", key=f"leave_{game['id']}", use_container_width=True):
                             leave_game(game["id"], player)
+                            st.session_state.pop(joining_key, None)
                             st.rerun(scope="fragment")
                     elif spots_left > 0:
-                        if st.button("Join", key=f"join_{game['id']}", use_container_width=True):
-                            join_game(game["id"], player)
-                            st.rerun(scope="fragment")
+                        if not st.session_state.get(joining_key):
+                            if st.button("Join", key=f"join_{game['id']}", use_container_width=True):
+                                st.session_state[joining_key] = True
+                                st.rerun(scope="fragment")
+                        else:
+                            if st.button("Cancel", key=f"cancel_{game['id']}", use_container_width=True):
+                                st.session_state.pop(joining_key, None)
+                                st.rerun(scope="fragment")
                     else:
                         st.caption("Full")
+
+                # Inline interest picker (shown below the card when joining)
+                if st.session_state.get(joining_key) and not is_joined and spots_left > 0:
+                    interest = st.radio(
+                        "Your interest level:",
+                        INTEREST_OPTIONS,
+                        format_func=lambda x: f"{INTEREST_ICONS[x]} {x}",
+                        key=f"interest_{game['id']}",
+                        horizontal=True,
+                    )
+                    if st.button("Confirm join", key=f"confirm_{game['id']}", use_container_width=True):
+                        join_game(game["id"], player, interest)
+                        st.session_state.pop(joining_key, None)
+                        st.rerun(scope="fragment")
 
     # Closed games (collapsed)
     closed_games = df[df["status"] == "closed"] if not df.empty else pd.DataFrame()
@@ -189,13 +235,19 @@ def host_game_form():
         title = st.text_input("Game title")
         max_players = st.number_input("Max players", min_value=2, max_value=20, value=4)
         notes = st.text_input("Notes (optional)", placeholder="e.g. beginner friendly, ~2hrs")
+        host_interest = st.radio(
+            "Your interest level:",
+            INTEREST_OPTIONS,
+            format_func=lambda x: f"{INTEREST_ICONS[x]} {x}",
+            horizontal=True,
+        )
         submitted = st.form_submit_button("Post game", use_container_width=True)
 
     if submitted:
         if not title.strip():
             st.error("Please enter a game title.")
         else:
-            save_game(title.strip(), player, int(max_players), notes.strip())
+            save_game(title.strip(), player, int(max_players), notes.strip(), host_interest)
             st.success(f"Posted **{title}**! It will appear in the list shortly.")
 
 # ── Main ──────────────────────────────────────────────────────────────────────
