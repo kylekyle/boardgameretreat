@@ -21,17 +21,21 @@ def check_password():
     if st.session_state.get("authenticated"):
         return True
 
-    # Check localStorage on first load
+    # st_javascript returns None on the first render (JS hasn't run yet).
+    # Only mark auth_checked once we get a real string back.
     if not st.session_state.get("auth_checked"):
         stored = st_javascript("localStorage.getItem('retreat_auth') || ''")
-        st.session_state["auth_checked"] = True
-        if stored == st.secrets["password"]:
-            st.session_state["authenticated"] = True
-            return True
+        if stored is not None:  # None means JS result not ready yet
+            st.session_state["auth_checked"] = True
+            if stored == st.secrets["password"]:
+                st.session_state["authenticated"] = True
+                return True
 
     st.title("🎲 Board Game Retreat")
-    pwd = st.text_input("Password", type="password")
-    if st.button("Enter"):
+    with st.form("login_form"):
+        pwd = st.text_input("Password", type="password")
+        submitted = st.form_submit_button("Enter")
+    if submitted:
         if pwd == st.secrets["password"]:
             st.session_state["authenticated"] = True
             safe = pwd.replace("'", "\\'")
@@ -249,9 +253,10 @@ def identity_sidebar():
 
         if "user_loaded" not in st.session_state:
             stored = load_user_from_storage()
-            if isinstance(stored, str) and stored:
-                st.session_state["player_name"] = stored
-            st.session_state["user_loaded"] = True
+            if stored is not None:  # None means JS result not ready yet
+                if isinstance(stored, str) and stored:
+                    st.session_state["player_name"] = stored
+                st.session_state["user_loaded"] = True
 
         if "player_name" not in st.session_state:
             st.session_state["player_name"] = ""
