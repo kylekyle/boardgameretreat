@@ -20,11 +20,22 @@ INTEREST_POINTS = {"must play": 3, "want to play": 2, "willing to play": 1}
 def check_password():
     if st.session_state.get("authenticated"):
         return True
+
+    # Check localStorage on first load
+    if not st.session_state.get("auth_checked"):
+        stored = st_javascript("localStorage.getItem('retreat_auth') || ''")
+        st.session_state["auth_checked"] = True
+        if stored == st.secrets["password"]:
+            st.session_state["authenticated"] = True
+            return True
+
     st.title("🎲 Board Game Retreat")
     pwd = st.text_input("Password", type="password")
     if st.button("Enter"):
         if pwd == st.secrets["password"]:
             st.session_state["authenticated"] = True
+            safe = pwd.replace("'", "\\'")
+            st_javascript(f"localStorage.setItem('retreat_auth', '{safe}')")
             st.rerun()
         else:
             st.error("Incorrect password.")
