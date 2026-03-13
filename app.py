@@ -8,6 +8,19 @@ import pandas as pd
 # ── Page config ──────────────────────────────────────────────────────────────
 st.set_page_config(page_title="Board Game Retreat", page_icon="🎲", layout="centered")
 
+def check_password():
+    if st.session_state.get("authenticated"):
+        return True
+    st.title("🎲 Board Game Retreat")
+    pwd = st.text_input("Password", type="password")
+    if st.button("Enter"):
+        if pwd == st.secrets["app"]["password"]:
+            st.session_state["authenticated"] = True
+            st.rerun()
+        else:
+            st.error("Incorrect password.")
+    return False
+
 INTEREST_OPTIONS = ["must play", "want to play", "willing to play"]
 INTEREST_ICONS = {"must play": "🔥", "want to play": "👍", "willing to play": "🤷"}
 INTEREST_POINTS = {"must play": 3, "want to play": 2, "willing to play": 1}
@@ -314,4 +327,5 @@ def main():
         host_game_form()
 
 if __name__ == "__main__":
-    main()
+    if check_password():
+        main()
