@@ -10,6 +10,11 @@ st.set_page_config(page_title="Board Game Retreat", page_icon="🎲", layout="ce
 
 INTEREST_OPTIONS = ["must play", "want to play", "willing to play"]
 INTEREST_ICONS = {"must play": "🔥", "want to play": "👍", "willing to play": "🤷"}
+INTEREST_POINTS = {"must play": 3, "want to play": 2, "willing to play": 1}
+
+def demand_score(players):
+    """Sum interest points for all players in a game."""
+    return sum(INTEREST_POINTS.get(lvl, 1) for _, lvl in players)
 
 # ── Google Sheets setup ───────────────────────────────────────────────────────
 SCOPES = [
@@ -131,6 +136,68 @@ def identity_sidebar():
         st.divider()
         st.caption("Data refreshes every 30s automatically.")
 
+# ── Shared game card renderer ─────────────────────────────────────────────────
+def render_game_card(game, player):
+    players = parse_players(game["players"])
+    names = [n for n, _ in players]
+    spots_left = int(game["max_players"]) - len(players)
+    is_joined = player in names
+    is_host = player == game["host"]
+    joining_key = f"joining_{game['id']}"
+    score = demand_score(players)
+
+    with st.container(border=True):
+        c1, c2 = st.columns([4, 1])
+        with c1:
+            st.markdown(f"**{game['title']}**  •  hosted by *{game['host']}*")
+            if players:
+                player_tags = ", ".join(
+                    f"{n} {INTEREST_ICONS.get(lvl, '')} *{lvl}*"
+                    for n, lvl in players
+                )
+                st.caption(f"Players ({len(players)}/{game['max_players']}): {player_tags}")
+            else:
+                st.caption(f"Players (0/{game['max_players']}): —")
+            st.caption(f"Demand score: **{score}**" + (f"  •  📝 {game['notes']}" if game["notes"] else ""))
+
+        with c2:
+            if not player:
+                st.caption("Set your name to join")
+            elif is_host:
+                if st.button("Close", key=f"close_{game['id']}", use_container_width=True):
+                    close_game(game["id"])
+                    st.rerun(scope="fragment")
+            elif is_joined:
+                if st.button("Leave", key=f"leave_{game['id']}", use_container_width=True):
+                    leave_game(game["id"], player)
+                    st.session_state.pop(joining_key, None)
+                    st.rerun(scope="fragment")
+            elif spots_left > 0:
+                if not st.session_state.get(joining_key):
+                    if st.button("Join", key=f"join_{game['id']}", use_container_width=True):
+                        st.session_state[joining_key] = True
+                        st.rerun(scope="fragment")
+                else:
+                    if st.button("Cancel", key=f"cancel_{game['id']}", use_container_width=True):
+                        st.session_state.pop(joining_key, None)
+                        st.rerun(scope="fragment")
+            else:
+                st.caption("Full")
+
+        # Inline interest picker (shown below the card when joining)
+        if st.session_state.get(joining_key) and not is_joined and spots_left > 0:
+            interest = st.radio(
+                "Your interest level:",
+                INTEREST_OPTIONS,
+                format_func=lambda x: f"{INTEREST_ICONS[x]} {x}",
+                key=f"interest_{game['id']}",
+                horizontal=True,
+            )
+            if st.button("Confirm join", key=f"confirm_{game['id']}", use_container_width=True):
+                join_game(game["id"], player, interest)
+                st.session_state.pop(joining_key, None)
+                st.rerun(scope="fragment")
+
 # ── Game list (auto-refreshing fragment) ──────────────────────────────────────
 @st.fragment(run_every=30)
 def game_list():
@@ -138,7 +205,7 @@ def game_list():
 
     col1, col2 = st.columns([3, 1])
     with col1:
-        st.subheader("Open Games")
+        st.subheader("Games by Demand")
     with col2:
         if st.button("Refresh", use_container_width=True):
             st.rerun(scope="fragment")
@@ -154,66 +221,14 @@ def game_list():
     if open_games.empty:
         st.info("No games open yet. Be the first to host one!")
     else:
-        for _, game in open_games.iterrows():
-            players = parse_players(game["players"])
-            names = [n for n, _ in players]
-            spots_left = int(game["max_players"]) - len(players)
-            is_joined = player in names
-            is_host = player == game["host"]
-            joining_key = f"joining_{game['id']}"
-
-            with st.container(border=True):
-                c1, c2 = st.columns([4, 1])
-                with c1:
-                    st.markdown(f"**{game['title']}**  •  hosted by *{game['host']}*")
-                    if players:
-                        player_tags = ", ".join(
-                            f"{n} {INTEREST_ICONS.get(lvl, '')} *{lvl}*"
-                            for n, lvl in players
-                        )
-                        st.caption(f"Players ({len(players)}/{game['max_players']}): {player_tags}")
-                    else:
-                        st.caption(f"Players (0/{game['max_players']}): —")
-                    if game["notes"]:
-                        st.caption(f"📝 {game['notes']}")
-
-                with c2:
-                    if not player:
-                        st.caption("Set your name to join")
-                    elif is_host:
-                        if st.button("Close", key=f"close_{game['id']}", use_container_width=True):
-                            close_game(game["id"])
-                            st.rerun(scope="fragment")
-                    elif is_joined:
-                        if st.button("Leave", key=f"leave_{game['id']}", use_container_width=True):
-                            leave_game(game["id"], player)
-                            st.session_state.pop(joining_key, None)
-                            st.rerun(scope="fragment")
-                    elif spots_left > 0:
-                        if not st.session_state.get(joining_key):
-                            if st.button("Join", key=f"join_{game['id']}", use_container_width=True):
-                                st.session_state[joining_key] = True
-                                st.rerun(scope="fragment")
-                        else:
-                            if st.button("Cancel", key=f"cancel_{game['id']}", use_container_width=True):
-                                st.session_state.pop(joining_key, None)
-                                st.rerun(scope="fragment")
-                    else:
-                        st.caption("Full")
-
-                # Inline interest picker (shown below the card when joining)
-                if st.session_state.get(joining_key) and not is_joined and spots_left > 0:
-                    interest = st.radio(
-                        "Your interest level:",
-                        INTEREST_OPTIONS,
-                        format_func=lambda x: f"{INTEREST_ICONS[x]} {x}",
-                        key=f"interest_{game['id']}",
-                        horizontal=True,
-                    )
-                    if st.button("Confirm join", key=f"confirm_{game['id']}", use_container_width=True):
-                        join_game(game["id"], player, interest)
-                        st.session_state.pop(joining_key, None)
-                        st.rerun(scope="fragment")
+        # Sort by demand score descending
+        scored = sorted(
+            open_games.itertuples(),
+            key=lambda g: demand_score(parse_players(g.players)),
+            reverse=True,
+        )
+        for game in scored:
+            render_game_card(game, player)
 
     # Closed games (collapsed)
     closed_games = df[df["status"] == "closed"] if not df.empty else pd.DataFrame()
@@ -221,6 +236,39 @@ def game_list():
         with st.expander(f"Closed games ({len(closed_games)})"):
             for _, game in closed_games.iterrows():
                 st.markdown(f"~~{game['title']}~~ — *{game['host']}*")
+
+# ── My Games (games hosted by the current user) ───────────────────────────────
+@st.fragment(run_every=30)
+def my_games():
+    player = st.session_state.get("player_name", "")
+
+    st.subheader("My Games")
+
+    if not player:
+        st.warning("Set your name in the sidebar to see your games.")
+        return
+
+    try:
+        df = load_games()
+    except Exception as e:
+        st.error(f"Could not load games: {e}")
+        return
+
+    hosted = df[df["host"] == player] if not df.empty else pd.DataFrame()
+
+    if hosted.empty:
+        st.info("You haven't hosted any games yet.")
+    else:
+        open_hosted = hosted[hosted["status"] == "open"]
+        closed_hosted = hosted[hosted["status"] == "closed"]
+
+        for _, game in open_hosted.iterrows():
+            render_game_card(game, player)
+
+        if not closed_hosted.empty:
+            with st.expander(f"Closed ({len(closed_hosted)})"):
+                for _, game in closed_hosted.iterrows():
+                    st.markdown(f"~~{game['title']}~~")
 
 # ── Host a game form ──────────────────────────────────────────────────────────
 def host_game_form():
@@ -254,10 +302,13 @@ def host_game_form():
 def main():
     identity_sidebar()
 
-    tab_games, tab_host = st.tabs(["Games", "Host a Game"])
+    tab_games, tab_mine, tab_host = st.tabs(["Games", "My Games", "Host a Game"])
 
     with tab_games:
         game_list()
+
+    with tab_mine:
+        my_games()
 
     with tab_host:
         host_game_form()
