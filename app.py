@@ -213,7 +213,7 @@ def game_list():
     try:
         df = load_games()
     except Exception as e:
-        st.error(f"Could not load games: {e}")
+        st.error(f"Could not load games: {e!r}")
         return
 
     open_games = df[df["status"] == "open"] if not df.empty else df
@@ -251,7 +251,7 @@ def my_games():
     try:
         df = load_games()
     except Exception as e:
-        st.error(f"Could not load games: {e}")
+        st.error(f"Could not load games: {e!r}")
         return
 
     hosted = df[df["host"] == player] if not df.empty else pd.DataFrame()
