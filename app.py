@@ -22,27 +22,36 @@ def check_password():
         return True
 
     # st_javascript returns None on the first render (JS hasn't run yet).
-    # Only mark auth_checked once we get a real string back.
+    # Only mark auth_checked once we get real values back.
     if not st.session_state.get("auth_checked"):
-        stored = st_javascript("localStorage.getItem('retreat_auth') || ''")
-        if stored is not None:  # None means JS result not ready yet
+        stored_auth = st_javascript("localStorage.getItem('retreat_auth') || ''")
+        stored_name = st_javascript("localStorage.getItem('retreat_user') || ''")
+        if stored_auth is not None and stored_name is not None:
             st.session_state["auth_checked"] = True
-            if stored == st.secrets["password"]:
+            if stored_auth == st.secrets["password"]:
                 st.session_state["authenticated"] = True
+                if isinstance(stored_name, str) and stored_name:
+                    st.session_state["player_name"] = stored_name
                 return True
 
     st.title("🎲 Board Game Retreat")
     with st.form("login_form"):
         pwd = st.text_input("Password", type="password")
-        submitted = st.form_submit_button("Enter")
+        name = st.text_input("Your name")
+        submitted = st.form_submit_button("Enter", use_container_width=True)
     if submitted:
-        if pwd == st.secrets["password"]:
-            st.session_state["authenticated"] = True
-            safe = pwd.replace("'", "\\'")
-            st_javascript(f"localStorage.setItem('retreat_auth', '{safe}')")
-            st.rerun()
-        else:
+        if not name.strip():
+            st.error("Please enter your name.")
+        elif pwd != st.secrets["password"]:
             st.error("Incorrect password.")
+        else:
+            st.session_state["authenticated"] = True
+            st.session_state["player_name"] = name.strip()
+            safe_pwd = pwd.replace("'", "\\'")
+            safe_name = name.strip().replace("'", "\\'")
+            st_javascript(f"localStorage.setItem('retreat_auth', '{safe_pwd}')")
+            st_javascript(f"localStorage.setItem('retreat_user', '{safe_name}')")
+            st.rerun()
     return False
 
 def demand_score(players):
@@ -248,41 +257,33 @@ def save_user_to_storage(name: str):
 def clear_user_from_storage():
     st_javascript("localStorage.removeItem('retreat_user')")
 
-# ── Identity sidebar ──────────────────────────────────────────────────────────
-def identity_sidebar():
-    with st.sidebar:
-        st.title("🎲 Board Game Retreat")
-        st.divider()
+# ── Settings tab ──────────────────────────────────────────────────────────────
+def settings_tab():
+    st.subheader("Settings")
+    player = st.session_state.get("player_name", "")
+    if player:
+        st.caption(f"Playing as **{player}**")
 
-        if "user_loaded" not in st.session_state:
-            stored = load_user_from_storage()
-            if stored is not None:  # None means JS result not ready yet
-                if isinstance(stored, str) and stored:
-                    st.session_state["player_name"] = stored
-                st.session_state["user_loaded"] = True
+    with st.form("settings_form"):
+        name = st.text_input("Your name", value=player)
+        submitted = st.form_submit_button("Save", use_container_width=True)
+    if submitted:
+        if name.strip():
+            st.session_state["player_name"] = name.strip()
+            save_user_to_storage(name.strip())
+            st.success("Saved!")
+        else:
+            st.warning("Please enter a name.")
 
-        if "player_name" not in st.session_state:
-            st.session_state["player_name"] = ""
+    if player:
+        if st.button("Sign out", use_container_width=True):
+            st.session_state.clear()
+            st_javascript("localStorage.removeItem('retreat_auth')")
+            clear_user_from_storage()
+            st.rerun()
 
-        name = st.text_input("Your name", value=st.session_state["player_name"], key="name_input")
-
-        if st.button("Save name", use_container_width=True):
-            if name.strip():
-                st.session_state["player_name"] = name.strip()
-                save_user_to_storage(name.strip())
-                st.success("Saved!")
-            else:
-                st.warning("Please enter a name.")
-
-        if st.session_state["player_name"]:
-            st.caption(f"Playing as **{st.session_state['player_name']}**")
-            if st.button("Clear", use_container_width=True):
-                st.session_state["player_name"] = ""
-                clear_user_from_storage()
-                st.rerun()
-
-        st.divider()
-        st.caption("Data refreshes every 30s automatically.")
+    st.divider()
+    st.caption("Data refreshes every 30s automatically.")
 
 # ── Shared game card renderer ─────────────────────────────────────────────────
 def _game_dict(game):
@@ -366,7 +367,7 @@ def render_game_card(game, player):
 
         with col_btn:
             if not player:
-                st.caption("Set your name to join")
+                st.caption("Set name in Settings")
             elif is_host:
                 if st.button("Close", key=f"close_{game['id']}", use_container_width=True):
                     close_game(game["id"])
@@ -452,7 +453,7 @@ def my_games():
     st.subheader("My Games")
 
     if not player:
-        st.warning("Set your name in the sidebar to see your games.")
+        st.warning("Set your name in the Settings tab to see your games.")
         return
 
     try:
@@ -483,7 +484,7 @@ def host_game_form():
     st.subheader("Host a Game")
 
     if not player:
-        st.warning("Set your name in the sidebar before hosting a game.")
+        st.warning("Set your name in the Settings tab before hosting a game.")
         return
 
     bgg_url = st.text_input(
@@ -567,9 +568,7 @@ def host_game_form():
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 def main():
-    identity_sidebar()
-
-    tab_games, tab_mine, tab_host = st.tabs(["Games", "My Games", "Host a Game"])
+    tab_games, tab_mine, tab_host, tab_settings = st.tabs(["Games", "My Games", "Host a Game", "Settings"])
 
     with tab_games:
         game_list()
@@ -579,6 +578,9 @@ def main():
 
     with tab_host:
         host_game_form()
+
+    with tab_settings:
+        settings_tab()
 
 if __name__ == "__main__":
     if check_password():
