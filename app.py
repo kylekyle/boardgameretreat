@@ -1,5 +1,6 @@
 import re
 import html
+import json
 import time
 import requests
 import xml.etree.ElementTree as ET
@@ -21,18 +22,23 @@ def check_password():
     if st.session_state.get("authenticated"):
         return True
 
-    # st_javascript returns None on the first render (JS hasn't run yet).
-    # Only mark auth_checked once we get real values back.
-    if not st.session_state.get("auth_checked"):
-        stored_auth = st_javascript("localStorage.getItem('retreat_auth') || ''")
-        stored_name = st_javascript("localStorage.getItem('retreat_user') || ''")
-        if stored_auth is not None and stored_name is not None:
-            st.session_state["auth_checked"] = True
-            if stored_auth == st.secrets["password"]:
+    # Read both values in a single JS call to keep component identity stable.
+    # Returns None on the first render while the browser JS hasn't responded yet.
+    stored = st_javascript(
+        "JSON.stringify({auth: localStorage.getItem('retreat_auth') || '',"
+        " name: localStorage.getItem('retreat_user') || ''})"
+    )
+
+    if not st.session_state.get("auth_checked") and stored is not None:
+        st.session_state["auth_checked"] = True
+        try:
+            data = json.loads(stored)
+            if data.get("auth") == st.secrets["password"]:
                 st.session_state["authenticated"] = True
-                if isinstance(stored_name, str) and stored_name:
-                    st.session_state["player_name"] = stored_name
-                return True
+                st.session_state["player_name"] = data.get("name", "")
+                st.rerun()
+        except (ValueError, KeyError):
+            pass
 
     st.title("🎲 Board Game Retreat")
     with st.form("login_form"):
