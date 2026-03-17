@@ -66,7 +66,7 @@ def parse_bgg_id(url):
 @st.cache_data(ttl=3600)
 def fetch_bgg_game(bgg_id):
     resp = requests.get(
-        f"https://www.boardgamegeek.com/xmlapi2/thing?id={bgg_id}&stats=1",
+        f"https://boardgamegeek.com/xmlapi2/thing?id={bgg_id}&stats=1",
         headers={
             "User-Agent": "BoardGameRetreat/1.0 (personal retreat planning app)",
             "Authorization": f"Bearer {st.secrets['bgg']['bearer_token']}",
