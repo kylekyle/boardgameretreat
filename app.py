@@ -22,22 +22,21 @@ def check_password():
     if st.session_state.get("authenticated"):
         return True
 
-    # Read both values in a single JS call to keep component identity stable.
-    # Returns None on the first render while the browser JS hasn't responded yet.
+    # st_javascript returns None (or sometimes 0) before the browser responds.
+    # Only act on a real JSON string; re-check on every render until we get one.
     stored = st_javascript(
         "JSON.stringify({auth: localStorage.getItem('retreat_auth') || '',"
         " name: localStorage.getItem('retreat_user') || ''})"
     )
 
-    if not st.session_state.get("auth_checked") and stored is not None:
-        st.session_state["auth_checked"] = True
+    if isinstance(stored, str) and stored:
         try:
             data = json.loads(stored)
             if data.get("auth") == st.secrets["password"]:
                 st.session_state["authenticated"] = True
                 st.session_state["player_name"] = data.get("name", "")
-                return True  # JS already rendered above; no rerun needed
-        except (ValueError, KeyError):
+                return True
+        except Exception:
             pass
 
     st.title("🎲 Board Game Retreat")
