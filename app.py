@@ -70,7 +70,10 @@ def search_bgg(query):
     resp = requests.get(
         "https://boardgamegeek.com/xmlapi2/search",
         params={"query": query, "type": "boardgame"},
-        headers={"User-Agent": "BoardGameRetreat/1.0 (personal retreat planning app)"},
+        headers={
+            "User-Agent": "BoardGameRetreat/1.0 (personal retreat planning app)",
+            "Authorization": f"Bearer {st.secrets['bgg']['bearer_token']}",
+        },
         timeout=10,
     )
     resp.raise_for_status()
