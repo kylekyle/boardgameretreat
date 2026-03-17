@@ -36,7 +36,7 @@ def check_password():
             if data.get("auth") == st.secrets["password"]:
                 st.session_state["authenticated"] = True
                 st.session_state["player_name"] = data.get("name", "")
-                st.rerun()
+                return True  # JS already rendered above; no rerun needed
         except (ValueError, KeyError):
             pass
 
@@ -55,9 +55,11 @@ def check_password():
             st.session_state["player_name"] = name.strip()
             safe_pwd = pwd.replace("'", "\\'")
             safe_name = name.strip().replace("'", "\\'")
+            # Don't rerun here — rerun cancels the current render and the
+            # st_javascript calls below never reach the browser.
             st_javascript(f"localStorage.setItem('retreat_auth', '{safe_pwd}')")
             st_javascript(f"localStorage.setItem('retreat_user', '{safe_name}')")
-            st.rerun()
+            return True
     return False
 
 def demand_score(players):
