@@ -54,8 +54,6 @@ def check_password():
             st.session_state["player_name"] = name.strip()
             safe_pwd = pwd.replace("'", "\\'")
             safe_name = name.strip().replace("'", "\\'")
-            # Don't rerun here — rerun cancels the current render and the
-            # st_javascript calls below never reach the browser.
             st_javascript(f"localStorage.setItem('retreat_auth', '{safe_pwd}')")
             st_javascript(f"localStorage.setItem('retreat_user', '{safe_name}')")
             return True
@@ -66,9 +64,27 @@ def demand_score(players):
     return sum(INTEREST_POINTS.get(lvl, 1) for _, lvl in players)
 
 # ── BoardGameGeek API ─────────────────────────────────────────────────────────
-def parse_bgg_id(url):
-    m = re.search(r'boardgamegeek\.com/boardgame(?:expansion)?/(\d+)', url)
-    return m.group(1) if m else None
+@st.cache_data(ttl=300)
+def search_bgg(query):
+    """Search BGG for board games. Returns list of {bgg_id, name, year}."""
+    resp = requests.get(
+        "https://boardgamegeek.com/xmlapi2/search",
+        params={"query": query, "type": "boardgame"},
+        headers={"User-Agent": "BoardGameRetreat/1.0 (personal retreat planning app)"},
+        timeout=10,
+    )
+    resp.raise_for_status()
+    root = ET.fromstring(resp.content)
+    results = []
+    for item in root.findall("item")[:15]:
+        name_el = item.find("name[@type='primary']")
+        year_el = item.find("yearpublished")
+        bgg_id = item.get("id", "")
+        name = name_el.get("value") if name_el is not None else "Unknown"
+        year = year_el.get("value", "") if year_el is not None else ""
+        if bgg_id:
+            results.append({"bgg_id": bgg_id, "name": name, "year": year})
+    return results
 
 @st.cache_data(ttl=3600)
 def fetch_bgg_game(bgg_id):
@@ -91,7 +107,6 @@ def fetch_bgg_game(bgg_id):
 
     desc_el = item.find("description")
     description = html.unescape(desc_el.text or "") if desc_el is not None else ""
-    # Strip BBCode-style tags BGG sometimes includes
     description = re.sub(r"\[/?[a-z]+[^\]]*\]", "", description).strip()
 
     min_players = item.find("minplayers").get("value", "1")
@@ -108,7 +123,6 @@ def fetch_bgg_game(bgg_id):
     year_el = item.find("yearpublished")
     year = year_el.get("value", "") if year_el is not None else ""
 
-    # Best player count from community poll
     best_players = ""
     best_votes = 0
     for poll in item.findall("poll"):
@@ -173,7 +187,6 @@ def load_games():
     records = sheet.get_all_records()
     if records:
         df = pd.DataFrame(records)
-        # Ensure optional BGG columns exist with empty defaults
         for col in ["bgg_id", "thumbnail", "min_players", "best_players",
                     "min_playtime", "max_playtime", "description",
                     "avg_rating", "complexity", "year"]:
@@ -188,7 +201,6 @@ def load_games():
     ])
 
 def parse_players(players_str):
-    """Return list of (name, interest) tuples from 'name:interest, ...' string."""
     result = []
     for entry in str(players_str).split(","):
         entry = entry.strip()
@@ -202,7 +214,6 @@ def parse_players(players_str):
     return result
 
 def encode_players(player_tuples):
-    """Encode list of (name, interest) tuples back to storage string."""
     return ", ".join(f"{name}:{interest}" for name, interest in player_tuples)
 
 def save_game(title, host, max_players, notes, host_interest, bgg=None):
@@ -250,19 +261,8 @@ def close_game(game_id):
     records = sheet.get_all_records()
     for i, row in enumerate(records, start=2):
         if str(row["id"]) == str(game_id):
-            sheet.update_cell(i, 7, "closed")  # col 7 = status
+            sheet.update_cell(i, 7, "closed")
             break
-
-# ── Session persistence via localStorage ─────────────────────────────────────
-def load_user_from_storage():
-    return st_javascript("localStorage.getItem('retreat_user') || ''")
-
-def save_user_to_storage(name: str):
-    safe = name.replace("'", "\\'")
-    st_javascript(f"localStorage.setItem('retreat_user', '{safe}')")
-
-def clear_user_from_storage():
-    st_javascript("localStorage.removeItem('retreat_user')")
 
 # ── Settings tab ──────────────────────────────────────────────────────────────
 def settings_tab():
@@ -277,7 +277,8 @@ def settings_tab():
     if submitted:
         if name.strip():
             st.session_state["player_name"] = name.strip()
-            save_user_to_storage(name.strip())
+            safe = name.strip().replace("'", "\\'")
+            st_javascript(f"localStorage.setItem('retreat_user', '{safe}')")
             st.success("Saved!")
         else:
             st.warning("Please enter a name.")
@@ -286,7 +287,7 @@ def settings_tab():
         if st.button("Sign out", use_container_width=True):
             st.session_state.clear()
             st_javascript("localStorage.removeItem('retreat_auth')")
-            clear_user_from_storage()
+            st_javascript("localStorage.removeItem('retreat_user')")
             st.rerun()
 
     st.divider()
@@ -294,13 +295,12 @@ def settings_tab():
 
 # ── Shared game card renderer ─────────────────────────────────────────────────
 def _game_dict(game):
-    """Normalize a game row to a plain dict regardless of source."""
     if isinstance(game, dict):
         return game
     try:
-        return game._asdict()   # namedtuple from itertuples()
+        return game._asdict()
     except AttributeError:
-        return game.to_dict()   # pandas Series from iterrows()
+        return game.to_dict()
 
 def render_game_card(game, player):
     game = _game_dict(game)
@@ -325,7 +325,6 @@ def render_game_card(game, player):
     bgg_id = str(game.get("bgg_id", "") or "")
 
     with st.container(border=True):
-        # Header row: thumbnail + title/meta + action button
         col_img, col_body, col_btn = st.columns([1, 4, 1])
 
         with col_img:
@@ -341,7 +340,6 @@ def render_game_card(game, player):
             st.markdown(title_line)
             st.caption(f"hosted by *{game['host']}*")
 
-            # Player count & playtime badges
             meta_parts = []
             if min_pl and max_pl:
                 pl_str = f"👥 {min_pl}–{max_pl} players"
@@ -357,7 +355,6 @@ def render_game_card(game, player):
             if meta_parts:
                 st.caption("  •  ".join(meta_parts))
 
-            # Current players
             if players:
                 player_tags = ", ".join(
                     f"{n} {INTEREST_ICONS.get(lvl, '')} *{lvl}*"
@@ -396,7 +393,6 @@ def render_game_card(game, player):
             else:
                 st.caption("Full")
 
-        # Inline interest picker
         if st.session_state.get(joining_key) and not is_joined and spots_left > 0:
             interest = st.radio(
                 "Your interest level:",
@@ -410,117 +406,28 @@ def render_game_card(game, player):
                 st.session_state.pop(joining_key, None)
                 st.rerun(scope="fragment")
 
-        # Description expander
         if description:
             with st.expander("Description"):
                 st.write(description)
 
-# ── Game list (auto-refreshing fragment) ──────────────────────────────────────
-@st.fragment(run_every=30)
-def game_list():
+# ── Add Game dialog ───────────────────────────────────────────────────────────
+@st.dialog("Add a Game", width="large")
+def add_game_dialog():
     player = st.session_state.get("player_name", "")
-
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        st.subheader("Games by Demand")
-    with col2:
-        if st.button("Refresh", use_container_width=True):
-            st.rerun(scope="fragment")
-
-    try:
-        df = load_games()
-    except Exception as e:
-        st.error(f"Could not load games: {e!r}")
-        return
-
-    open_games = df[df["status"] == "open"] if not df.empty else df
-
-    if open_games.empty:
-        st.info("No games open yet. Be the first to host one!")
-    else:
-        scored = sorted(
-            open_games.itertuples(),
-            key=lambda g: demand_score(parse_players(g.players)),
-            reverse=True,
-        )
-        for game in scored:
-            render_game_card(game, player)
-
-    closed_games = df[df["status"] == "closed"] if not df.empty else pd.DataFrame()
-    if not closed_games.empty:
-        with st.expander(f"Closed games ({len(closed_games)})"):
-            for _, game in closed_games.iterrows():
-                st.markdown(f"~~{game['title']}~~ — *{game['host']}*")
-
-# ── My Games ──────────────────────────────────────────────────────────────────
-@st.fragment(run_every=30)
-def my_games():
-    player = st.session_state.get("player_name", "")
-
-    st.subheader("My Games")
-
     if not player:
-        st.warning("Set your name in the Settings tab to see your games.")
+        st.warning("Set your name in **Settings** before adding a game.")
         return
 
-    try:
-        df = load_games()
-    except Exception as e:
-        st.error(f"Could not load games: {e!r}")
-        return
+    # ── Step 2: host form ─────────────────────────────────────────────────────
+    if st.session_state.get("dlg_bgg"):
+        bgg = st.session_state["dlg_bgg"]
 
-    hosted = df[df["host"] == player] if not df.empty else pd.DataFrame()
+        col_back, _ = st.columns([1, 5])
+        with col_back:
+            if st.button("← Back"):
+                del st.session_state["dlg_bgg"]
+                st.rerun()
 
-    if hosted.empty:
-        st.info("You haven't hosted any games yet.")
-    else:
-        open_hosted = hosted[hosted["status"] == "open"]
-        closed_hosted = hosted[hosted["status"] == "closed"]
-
-        for _, game in open_hosted.iterrows():
-            render_game_card(game, player)
-
-        if not closed_hosted.empty:
-            with st.expander(f"Closed ({len(closed_hosted)})"):
-                for _, game in closed_hosted.iterrows():
-                    st.markdown(f"~~{game['title']}~~")
-
-# ── Host a game form ──────────────────────────────────────────────────────────
-def host_game_form():
-    player = st.session_state.get("player_name", "")
-    st.subheader("Host a Game")
-
-    if not player:
-        st.warning("Set your name in the Settings tab before hosting a game.")
-        return
-
-    bgg_url = st.text_input(
-        "BoardGameGeek URL",
-        placeholder="https://boardgamegeek.com/boardgame/13/catan",
-    )
-    if st.button("Fetch game info"):
-        if not bgg_url.strip():
-            st.warning("Paste a BoardGameGeek URL first.")
-        else:
-            bgg_id = parse_bgg_id(bgg_url.strip())
-            if not bgg_id:
-                st.error("Couldn't find a game ID in that URL. Make sure it's a boardgamegeek.com/boardgame/… link.")
-            else:
-                with st.spinner("Fetching from BoardGameGeek…"):
-                    try:
-                        data = fetch_bgg_game(bgg_id)
-                    except Exception as ex:
-                        st.error(f"BGG API error: {ex}")
-                        data = None
-                if data:
-                    st.session_state["bgg_data"] = data
-                else:
-                    st.error("Game not found on BoardGameGeek.")
-
-    bgg = st.session_state.get("bgg_data")
-
-    if bgg:
-        st.divider()
         c_img, c_info = st.columns([1, 3])
         with c_img:
             if bgg.get("image"):
@@ -532,7 +439,6 @@ def host_game_form():
             if bgg.get("year"):
                 title_md += f" *({bgg['year']})*"
             st.markdown(title_md)
-
             meta = []
             if bgg.get("min_players") and bgg.get("max_players"):
                 pl = f"👥 {bgg['min_players']}–{bgg['max_players']} players"
@@ -553,7 +459,7 @@ def host_game_form():
                 st.write(bgg["description"])
 
         st.divider()
-        with st.form("host_form", clear_on_submit=True):
+        with st.form("dlg_host_form"):
             max_players = st.number_input(
                 "Max players for your session",
                 min_value=2, max_value=20,
@@ -570,21 +476,107 @@ def host_game_form():
 
         if submitted:
             save_game(bgg["name"], player, int(max_players), notes.strip(), host_interest, bgg)
-            st.session_state.pop("bgg_data", None)
-            st.success(f"Posted **{bgg['name']}**! It will appear in the list shortly.")
+            del st.session_state["dlg_bgg"]
+            st.rerun()
+        return
+
+    # ── Step 1: BGG search ────────────────────────────────────────────────────
+    query = st.text_input(
+        "Search BoardGameGeek",
+        placeholder="Type a game name…",
+        key="dlg_search_query",
+    )
+
+    if not query or len(query.strip()) < 2:
+        st.caption("Type at least 2 characters to search.")
+        return
+
+    with st.spinner("Searching BoardGameGeek…"):
+        try:
+            results = search_bgg(query.strip())
+        except Exception as e:
+            st.error(f"Search failed: {e}")
+            return
+
+    if not results:
+        st.caption("No games found. Try a different search term.")
+        return
+
+    for r in results:
+        label = r["name"]
+        if r["year"]:
+            label += f"  ({r['year']})"
+        if st.button(label, key=f"dlg_pick_{r['bgg_id']}", use_container_width=True):
+            with st.spinner("Loading game details…"):
+                try:
+                    data = fetch_bgg_game(r["bgg_id"])
+                except Exception as e:
+                    st.error(f"Could not fetch game: {e}")
+                    data = None
+            if data:
+                st.session_state["dlg_bgg"] = data
+                st.rerun()
+
+# ── Game list (auto-refreshing fragment) ──────────────────────────────────────
+@st.fragment(run_every=30)
+def game_list():
+    player = st.session_state.get("player_name", "")
+
+    search = st.text_input(
+        "Search",
+        placeholder="Search by name, description, host, or player…",
+        label_visibility="collapsed",
+    )
+
+    try:
+        df = load_games()
+    except Exception as e:
+        st.error(f"Could not load games: {e!r}")
+        return
+
+    open_games = df[df["status"] == "open"] if not df.empty else df
+
+    if search:
+        q = search.strip().lower()
+        open_games = open_games[
+            open_games["title"].str.lower().str.contains(q, na=False, regex=False) |
+            open_games["description"].str.lower().str.contains(q, na=False, regex=False) |
+            open_games["host"].str.lower().str.contains(q, na=False, regex=False) |
+            open_games["players"].str.lower().str.contains(q, na=False, regex=False)
+        ]
+
+    if open_games.empty:
+        if search:
+            st.info("No games match your search.")
+        else:
+            st.info("No games yet. Hit **Add Game** to be the first!")
+    else:
+        scored = sorted(
+            open_games.itertuples(),
+            key=lambda g: demand_score(parse_players(g.players)),
+            reverse=True,
+        )
+        for game in scored:
+            render_game_card(game, player)
+
+    if not search:
+        closed_games = df[df["status"] == "closed"] if not df.empty else pd.DataFrame()
+        if not closed_games.empty:
+            with st.expander(f"Closed games ({len(closed_games)})"):
+                for _, game in closed_games.iterrows():
+                    st.markdown(f"~~{game['title']}~~ — *{game['host']}*")
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 def main():
-    tab_games, tab_mine, tab_host, tab_settings = st.tabs(["Games", "My Games", "Host a Game", "Settings"])
+    col_tabs, col_btn = st.columns([5, 1])
+    with col_btn:
+        if st.button("+ Add Game", use_container_width=True):
+            add_game_dialog()
+
+    tab_games, tab_settings = st.tabs(["Games", "Settings"])
 
     with tab_games:
         game_list()
-
-    with tab_mine:
-        my_games()
-
-    with tab_host:
-        host_game_form()
 
     with tab_settings:
         settings_tab()
