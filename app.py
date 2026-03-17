@@ -66,14 +66,15 @@ def demand_score(players):
 # ── BoardGameGeek API ─────────────────────────────────────────────────────────
 @st.cache_data(ttl=300)
 def search_bgg(query):
-    """Search BGG for board games. Returns list of {bgg_id, name, year}."""
+    """Search BGG for board games. Returns list of {bgg_id, name, year, thumbnail}."""
+    hdrs = {
+        "User-Agent": "BoardGameRetreat/1.0 (personal retreat planning app)",
+        "Authorization": f"Bearer {st.secrets['bgg']['bearer_token']}",
+    }
     resp = requests.get(
         "https://boardgamegeek.com/xmlapi2/search",
         params={"query": query, "type": "boardgame"},
-        headers={
-            "User-Agent": "BoardGameRetreat/1.0 (personal retreat planning app)",
-            "Authorization": f"Bearer {st.secrets['bgg']['bearer_token']}",
-        },
+        headers=hdrs,
         timeout=10,
     )
     resp.raise_for_status()
@@ -86,7 +87,28 @@ def search_bgg(query):
         name = name_el.get("value") if name_el is not None else "Unknown"
         year = year_el.get("value", "") if year_el is not None else ""
         if bgg_id:
-            results.append({"bgg_id": bgg_id, "name": name, "year": year})
+            results.append({"bgg_id": bgg_id, "name": name, "year": year, "thumbnail": ""})
+
+    # Batch-fetch thumbnails for all results in one request
+    if results:
+        ids = ",".join(r["bgg_id"] for r in results)
+        try:
+            tr = requests.get(
+                f"https://boardgamegeek.com/xmlapi2/thing?id={ids}",
+                headers=hdrs,
+                timeout=10,
+            )
+            tr.raise_for_status()
+            thumbs = {}
+            for item in ET.fromstring(tr.content).findall("item"):
+                el = item.find("thumbnail")
+                if el is not None and el.text:
+                    thumbs[item.get("id", "")] = el.text.strip()
+            for r in results:
+                r["thumbnail"] = thumbs.get(r["bgg_id"], "")
+        except Exception:
+            pass  # thumbnails are best-effort
+
     return results
 
 @st.cache_data(ttl=3600)
@@ -427,9 +449,9 @@ def add_game_dialog():
 
         col_back, _ = st.columns([1, 5])
         with col_back:
+            # No st.rerun() — button click triggers the rerun; dialog stays open
             if st.button("← Back"):
                 del st.session_state["dlg_bgg"]
-                st.rerun()
 
         c_img, c_info = st.columns([1, 3])
         with c_img:
@@ -462,25 +484,27 @@ def add_game_dialog():
                 st.write(bgg["description"])
 
         st.divider()
-        with st.form("dlg_host_form"):
-            max_players = st.number_input(
-                "Max players for your session",
-                min_value=2, max_value=20,
-                value=int(bgg.get("max_players") or 4),
-            )
-            notes = st.text_input("Notes (optional)", placeholder="e.g. beginner friendly, ~2hrs")
-            host_interest = st.radio(
-                "Your interest level:",
-                INTEREST_OPTIONS,
-                format_func=lambda x: f"{INTEREST_ICONS[x]} {x}",
-                horizontal=True,
-            )
-            submitted = st.form_submit_button("Post game", use_container_width=True)
-
-        if submitted:
+        max_players = st.number_input(
+            "Max players for your session",
+            min_value=2, max_value=20,
+            value=int(bgg.get("max_players") or 4),
+            key="dlg_max_players",
+        )
+        notes = st.text_input(
+            "Notes (optional)", placeholder="e.g. beginner friendly, ~2hrs",
+            key="dlg_notes",
+        )
+        host_interest = st.radio(
+            "Your interest level:",
+            INTEREST_OPTIONS,
+            format_func=lambda x: f"{INTEREST_ICONS[x]} {x}",
+            horizontal=True,
+            key="dlg_interest",
+        )
+        if st.button("Post game", use_container_width=True, key="dlg_post"):
             save_game(bgg["name"], player, int(max_players), notes.strip(), host_interest, bgg)
             del st.session_state["dlg_bgg"]
-            st.rerun()
+            st.rerun()  # closes dialog and refreshes game list
         return
 
     # ── Step 1: BGG search ────────────────────────────────────────────────────
@@ -509,16 +533,21 @@ def add_game_dialog():
         label = r["name"]
         if r["year"]:
             label += f"  ({r['year']})"
-        if st.button(label, key=f"dlg_pick_{r['bgg_id']}", use_container_width=True):
-            with st.spinner("Loading game details…"):
-                try:
-                    data = fetch_bgg_game(r["bgg_id"])
-                except Exception as e:
-                    st.error(f"Could not fetch game: {e}")
-                    data = None
-            if data:
-                st.session_state["dlg_bgg"] = data
-                st.rerun()
+        col_thumb, col_btn = st.columns([1, 6])
+        with col_thumb:
+            if r.get("thumbnail"):
+                st.image(r["thumbnail"])
+        with col_btn:
+            if st.button(label, key=f"dlg_pick_{r['bgg_id']}", use_container_width=True):
+                with st.spinner("Loading game details…"):
+                    try:
+                        data = fetch_bgg_game(r["bgg_id"])
+                    except Exception as e:
+                        st.error(f"Could not fetch game: {e}")
+                        data = None
+                if data:
+                    # No st.rerun() — button click triggers the rerun; dialog stays open
+                    st.session_state["dlg_bgg"] = data
 
 # ── Game list (auto-refreshing fragment) ──────────────────────────────────────
 @st.fragment(run_every=30)
